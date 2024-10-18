@@ -1273,6 +1273,8 @@ def priordict_to_priorset(priordict,verbose=True):
         val = inp['value']
         if inp['type'] == 'normal':
             outp = NP(val[0],val[1],key,key,priortype='model')
+        elif inp['type'] == 'truncatednormal':
+            outp = NP(val[0],val[1],key,key,priortype='model',lims=(val[2],val[3]))
         elif inp['type'] == 'uniform':
             outp = UP(val[0],val[1],key,key,priortype='model')
         elif inp['type'] == 'fixed':
