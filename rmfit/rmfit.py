@@ -14,6 +14,11 @@ from . import utils
 from . import mcmc_help
 from . import convective_blueshift
 
+# Multiprocessing
+from multiprocessing import Pool
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+
 class LPFunction3(object):
     """
     Log-Likelihood function class
@@ -1326,7 +1331,7 @@ class RMFit(object):
         self.min_pv = minimize(neg_lpf,centers,method='Nelder-Mead',tol=1e-9,
                                    options={'maxiter': 100000, 'maxfev': 10000, 'disp': True}).x
 
-    def minimize_PyDE(self,npop=100,de_iter=200,mc_iter=1000,mcmc=True,threads=8,maximize=True,plot_priors=True,sample_ball=False,k=None,n=None):
+    def minimize_PyDE(self,npop=100,de_iter=200,mc_iter=1000,mc_thin=1,mcmc=True,nthreads=8,maximize=True,plot_priors=True,sample_ball=False,k=None,n=None,c=0.5):
         """
         Minimize using the PyDE
 
@@ -1335,7 +1340,7 @@ class RMFit(object):
         """
         centers = np.array(self.lpf.ps_vary.centers)
         print("Running PyDE Optimizer")
-        self.de = pyde.de.DiffEvol(self.lpf, self.lpf.ps_vary.bounds, npop, maximize=maximize) # we want to maximize the likelihood
+        self.de = pyde.de.DiffEvol(self.lpf, self.lpf.ps_vary.bounds, npop, c=c, maximize=maximize) # we want to maximize the likelihood
         self.min_pv, self.min_pv_lnval = self.de.optimize(ngen=de_iter)
         print("Optimized using PyDE")
         print("Final parameters:")
@@ -1349,18 +1354,10 @@ class RMFit(object):
             print("BIC:",stats_help.bic_from_likelihood(self.lnl_max,k,n))
             print("AIC:",stats_help.aic(k,self.lnl_max))
         if mcmc:
-            print("Running MCMC")
-            self.sampler = emcee.EnsembleSampler(npop, self.lpf.ps_vary.ndim, self.lpf,threads=threads)
-
-            #pb = ipywidgets.IntProgress(max=mc_iter/50)
-            #display(pb)
-            #val = 0
-            print("MCMC iterations=",mc_iter)
-            for i,c in enumerate(self.sampler.sample(self.de.population,iterations=mc_iter)):
-                print(i,end=" ")
-                #if i%50 == 0:
-                    #val+=50.
-                    #pb.value += 1
+            print("Running MCMC with {:d} iterations, thinning = {:d}".format(mc_iter,mc_thin))
+            with Pool(nthreads) as pool:
+                self.sampler = emcee.EnsembleSampler(npop, self.lpf.ps_vary.ndim, self.lpf, pool=pool)
+                self.sampler.run_mcmc(self.de.population, mc_iter, thin_by=mc_thin, progress=True)
             print("Finished MCMC")
             self.min_pv_mcmc = self.get_mean_values_mcmc_posteriors().medvals.values
 
@@ -1383,7 +1380,7 @@ class RMFit(object):
         A function to print nice parameter diagnostics.
         """
         self.df_diagnostics = pd.DataFrame(zip(self.lpf.ps_vary.labels,self.lpf.ps_vary.centers,self.lpf.ps_vary.bounds[:,0],self.lpf.ps_vary.bounds[:,1],pv,self.lpf.ps_vary.centers-pv),columns=["labels","centers","lower","upper","pv","center_dist"])
-        print(self.df_diagnostics.to_string())
+        print(self.df_diagnostics.to_string(float_format='%.6f'))
         return self.df_diagnostics
 
     def plot_fit(self,pv=None,times=None):
