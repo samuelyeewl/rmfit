@@ -1829,6 +1829,7 @@ class RMFit(object):
     """
     def __init__(self,LPFunction):
         self.lpf = LPFunction
+        self.de = None
 
     def minimize_AMOEBA(self):
         centers = np.array(self.lpf.ps_vary.centers)
@@ -1838,7 +1839,10 @@ class RMFit(object):
         self.min_pv = minimize(neg_lpf,centers,method='Nelder-Mead',tol=1e-9,
                                    options={'maxiter': 100000, 'maxfev': 10000, 'disp': True}).x
 
-    def minimize_PyDE(self,npop=100,de_iter=200,mc_iter=1000,mc_thin=1,mcmc=True,nthreads=8,maximize=True,plot_priors=True,sample_ball=False,k=None,n=None,c=0.5):
+    def minimize_PyDE(self, npop=100, de_iter=200, de_c=0.5, maximize=True, force_de=False,
+                      mcmc=True, mc_iter=1000, mc_thin=1, nthreads=8, 
+                      plot_priors=True,sample_ball=False,k=None,n=None,
+                      mc_outfile=None, mc_reset=True):
         """
         Minimize using the PyDE
 
@@ -1846,26 +1850,68 @@ class RMFit(object):
             see https://github.com/hpparvi/PyDE
         """
         centers = np.array(self.lpf.ps_vary.centers)
-        print("Running PyDE Optimizer")
-        self.de = pyde.de.DiffEvol(self.lpf, self.lpf.ps_vary.bounds, npop, c=c, maximize=maximize) # we want to maximize the likelihood
-        self.min_pv, self.min_pv_lnval = self.de.optimize(ngen=de_iter)
-        print("Optimized using PyDE")
-        print("Final parameters:")
-        self.print_param_diagnostics(self.min_pv)
-        #self.lpf.ps.plot_all(figsize=(6,4),pv=self.min_pv)
-        print("LogPost value:",-1*self.min_pv_lnval)
-        self.lnl_max  = -1*self.min_pv_lnval-self.lpf.ps_vary.c_log_prior(self.min_pv)
-        print("LnL value:",self.lnl_max)
-        print("Log priors",self.lpf.ps_vary.c_log_prior(self.min_pv))
-        if k is not None and n is not None:
-            print("BIC:",stats_help.bic_from_likelihood(self.lnl_max,k,n))
-            print("AIC:",stats_help.aic(k,self.lnl_max))
+        if self.de is None or force_de:
+            print("Running PyDE Optimizer")
+            self.de = pyde.de.DiffEvol(self.lpf, self.lpf.ps_vary.bounds, npop, c=de_c, maximize=maximize) # we want to maximize the likelihood
+            self.min_pv, self.min_pv_lnval = self.de.optimize(ngen=de_iter)
+            print("Optimized using PyDE")
+            print("Final parameters:")
+            self.print_param_diagnostics(self.min_pv)
+            #self.lpf.ps.plot_all(figsize=(6,4),pv=self.min_pv)
+            print("LogPost value:",-1*self.min_pv_lnval)
+            self.lnl_max  = -1*self.min_pv_lnval-self.lpf.ps_vary.c_log_prior(self.min_pv)
+            print("LnL value:",self.lnl_max)
+            print("Log priors",self.lpf.ps_vary.c_log_prior(self.min_pv))
+            if k is not None and n is not None:
+                print("BIC:",stats_help.bic_from_likelihood(self.lnl_max,k,n))
+                print("AIC:",stats_help.aic(k,self.lnl_max))
         if mcmc:
             print("Running MCMC with {:d} iterations, thinning = {:d}".format(mc_iter,mc_thin))
+            if mc_outfile is not None:
+                print("Saving samples to {:s}".format(mc_outfile))
+                backend = emcee.backends.HDFBackend(mc_outfile)
+                if mc_reset:
+                    backend.reset(nwalkers=npop, ndim=self.lpf.ps_vary.ndim)
+            else:
+                backend = None
             with Pool(nthreads) as pool:
-                self.sampler = emcee.EnsembleSampler(npop, self.lpf.ps_vary.ndim, self.lpf, pool=pool)
-                self.sampler.run_mcmc(self.de.population, mc_iter, thin_by=mc_thin, progress=True)
+                self.sampler = emcee.EnsembleSampler(npop, self.lpf.ps_vary.ndim, self.lpf, backend=backend, pool=pool)
+
+                old_tau = np.inf
+                for sample in self.sampler.sample(self.de.population, iterations=mc_iter, thin_by=mc_thin, progress=True):
+                    # Only check for convergence every 100 steps, starting at 10%.
+                    if (self.sampler.iteration % 100) or (self.sampler.iteration < (mc_iter // 10)):
+                        continue
+                    tau = self.sampler.get_autocorr_time(tol=0, quiet=True)
+                    print('Mean autocorrelation time: {:.0f} steps'.format(np.mean(tau)))
+                    # Check convergence: 100 autocorrelation times + max relative change of < 1%.
+                    converged = np.all(tau * 100 < self.sampler.iteration)
+                    converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
+                    if converged:
+                        break
+                    old_tau = tau
+
             print("Finished MCMC")
+            tau = np.max(self.sampler.get_autocorr_time(quiet=True))
+            print("Max autocorrelation time: {:.0f} steps".format(tau))
+            if self.sampler.iteration < (100 * tau):
+                print("Warning: number of iterations {:d} is less than 100 times the autocorrelation time {:.0f}".format(self.sampler.iteration, tau))
+            else:
+                print("MCMC converged, number of iterations {:d} is {:.0f} times the autocorrelation time {:.0f}".format(self.sampler.iteration, self.sampler.iteration / tau, tau))
+
+            print("Mean acceptance fraction: {:.3f}".format(np.mean(self.sampler.acceptance_fraction)))
+            log_probs = self.sampler.get_log_prob()
+            max_log_prob = np.max(log_probs)
+            print("Max LogPost: {:.3f}".format(max_log_prob))
+            try:
+                k = self.lpf.n_vary
+                n = self.lpf.n_data
+                print("Number of parameters: {:d}".format(k))
+                print("Number of data points: {:d}".format(n))
+                print("BIC: {:.3f}".format(stats_help.bic_from_likelihood(max_log_prob,k,n)))
+                print("AIC: {:.3f}".format(stats_help.aic(k,max_log_prob)))
+            except:
+                pass
             self.min_pv_mcmc = self.get_mean_values_mcmc_posteriors().medvals.values
 
     def get_mean_values_mcmc_posteriors(self,flatchain=None):
