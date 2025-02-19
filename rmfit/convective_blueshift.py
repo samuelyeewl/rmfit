@@ -61,24 +61,35 @@ def cb_limbdark(ds,rp,u1,u2,vb,epsabs=1.49e-08,epsrel=1.49e-08):
             return 0.
         mu = np.sqrt(1.-r**2.)
         if d==0:
-            return (vb*mu-baseline)*(r*np.pi*limb_dark_quadradic(r,u1,u2))
+            return (vb*mu-baseline)*(r*2*np.pi*limb_dark_quadradic(r,u1,u2))
         t = theta(r,d,rp)
         if np.abs(t) > 1:
-            return (vb*mu-baseline)*(r*np.pi*limb_dark_quadradic(r,u1,u2))
+            return (vb*mu-baseline)*(r*2*np.pi*limb_dark_quadradic(r,u1,u2))
         else:
-            return (vb*mu-baseline)*(r*np.arccos(t)*limb_dark_quadradic(r,u1,u2))
+            return (vb*mu-baseline)*(r*2*np.arccos(t)*limb_dark_quadradic(r,u1,u2))
 
-    def _denom_integrand(r,u1,u2):
-        return r*limb_dark_quadradic(r,u1,u2)
+    def _denom_integrand(r,d,rp,u1,u2):
+        if r > 1.:
+            return 0.
+        mu = np.sqrt(1.-r**2.)
+        if d==0:
+            return (r*2*np.pi*limb_dark_quadradic(r,u1,u2))
+        t = theta(r,d,rp)
+        if np.abs(t) > 1:
+            return (r*2*np.pi*limb_dark_quadradic(r,u1,u2))
+        else:
+            return (r*2*np.arccos(t)*limb_dark_quadradic(r,u1,u2))
     
-    denominator = quad(_denom_integrand,0.,1.,args=(u1,u2),epsabs=epsabs,epsrel=epsrel)[0] # full disk
-    baseline = (quad(_num_integrand,0.,1.,args=(0.,1.,u1,u2,vb,0.),epsabs=epsabs,epsrel=epsrel)[0]/np.pi) / quad(_denom_integrand,0.,1.,args=(u1,u2),epsabs=epsabs,epsrel=epsrel)[0]
+    # denominator = quad(_denom_integrand,0.,1.,args=(0.,1.,u1,u2),epsabs=epsabs,epsrel=epsrel)[0] # full disk
+    full_disk_numerator = quad(_num_integrand,0.,1.,args=(0.,1.,u1,u2,vb,0.),epsabs=epsabs,epsrel=epsrel)[0] # full disk
+    full_disk_denominator = quad(_denom_integrand,0.,1.,args=(0.,1.,u1,u2),epsabs=epsabs,epsrel=epsrel)[0] # full disk
     
     velocities = []
     for d in ds:
         d = np.abs(d)
         low_lim = np.max([0,d-rp])
         upp_lim = np.min([1.,d+rp])
-        numerator = 0. - quad(_num_integrand,low_lim,upp_lim,args=(d,rp,u1,u2,vb,baseline),epsabs=epsabs,epsrel=epsrel)[0]/np.pi 
-        velocities.append(numerator/denominator)
+        occulted_numerator = quad(_num_integrand,low_lim,upp_lim,args=(d,rp,u1,u2,vb,0.),epsabs=epsabs,epsrel=epsrel)[0]
+        occulted_denominator = quad(_denom_integrand,low_lim,upp_lim,args=(d,rp,u1,u2),epsabs=epsabs,epsrel=epsrel)[0]
+        velocities.append((full_disk_numerator - occulted_numerator) / (full_disk_denominator - occulted_denominator))
     return np.array(velocities)
