@@ -1883,7 +1883,8 @@ class RMFit(object):
                     if (self.sampler.iteration % 100) or (self.sampler.iteration < (mc_iter // 10)):
                         continue
                     tau = self.sampler.get_autocorr_time(tol=0, quiet=True)
-                    print('Mean autocorrelation time: {:.0f} steps'.format(np.mean(tau)))
+                    print('Autocorrelation time: Max = {:.0f}, Mean = {:.0f}'.format(np.max(tau), np.mean(tau)))
+                    print('Mean acceptance fraction: {:.3f}'.format(np.mean(self.sampler.acceptance_fraction)))
                     # Check convergence: 100 autocorrelation times + max relative change of < 1%.
                     converged = np.all(tau * 100 < self.sampler.iteration)
                     converged &= np.all(np.abs(old_tau - tau) / tau < 0.01)
