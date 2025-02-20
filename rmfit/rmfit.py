@@ -1867,6 +1867,7 @@ class RMFit(object):
                 print("AIC:",stats_help.aic(k,self.lnl_max))
         if mcmc:
             print("Running MCMC with {:d} iterations, thinning = {:d}".format(mc_iter,mc_thin))
+            resume = False
             if mc_outfile is not None:
                 print("Saving samples to {:s}".format(mc_outfile))
                 backend = emcee.backends.HDFBackend(mc_outfile)
@@ -1874,13 +1875,15 @@ class RMFit(object):
                     backend.reset(nwalkers=npop, ndim=self.lpf.ps_vary.ndim)
                 else:
                     print("Resuming MCMC, starting from iteration {:d}".format(backend.iteration))
+                    resume = True
             else:
                 backend = None
             with Pool(nthreads) as pool:
                 self.sampler = emcee.EnsembleSampler(npop, self.lpf.ps_vary.ndim, self.lpf, backend=backend, pool=pool)
 
                 old_tau = np.inf
-                for sample in self.sampler.sample(self.de.population, iterations=mc_iter, thin_by=mc_thin, progress=True):
+                start_pop = None if resume else self.de.population
+                for sample in self.sampler.sample(start_pop, iterations=mc_iter, thin_by=mc_thin, progress=True):
                     # Only check for convergence every 100 steps, starting at 10%.
                     if (self.sampler.iteration % 100) or (self.sampler.iteration < (mc_iter // 10)):
                         continue
