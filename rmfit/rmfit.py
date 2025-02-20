@@ -1870,8 +1870,10 @@ class RMFit(object):
             if mc_outfile is not None:
                 print("Saving samples to {:s}".format(mc_outfile))
                 backend = emcee.backends.HDFBackend(mc_outfile)
-                if mc_reset:
+                if mc_reset or not os.path.exists(mc_outfile):
                     backend.reset(nwalkers=npop, ndim=self.lpf.ps_vary.ndim)
+                else:
+                    print("Resuming MCMC, starting from iteration {:d}".format(backend.iteration))
             else:
                 backend = None
             with Pool(nthreads) as pool:
