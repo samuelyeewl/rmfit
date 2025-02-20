@@ -2239,6 +2239,25 @@ class RMHiranoDiffRot(RMHirano):
         super().__init__(lam,vsini,P,T0,aRs,i,RpRs,e,w,u,beta,sigma,supersample_factor=supersample_factor,exp_time=exp_time,limb_dark=limb_dark)
         self.alpha = alpha
         self.iS = istar
+
+    def calc_transit(self,times):
+        """
+        Calculate transit model of planet
+        """
+        params = batman.TransitParams()
+        params.t0 = self.T0
+        params.per = self.P
+        params.inc = self.i
+        params.rp = self.RpRs
+        params.a = self.aRs
+        params.ecc = self.e
+        params.w = self.w
+        params.u = self.u
+        params.limb_dark = self.limb_dark
+        params.fp = 0.001
+        transitmodel = batman.TransitModel(params, times, transittype='primary',exp_time=self.exp_time / self.supersample_factor,
+                                           supersample_factor=1)
+        return transitmodel.light_curve(params)
         
     def XpYp(self,times):
         lam, w, i = np.deg2rad(self.lam), np.deg2rad(self.w), np.deg2rad(self.i)
@@ -2249,15 +2268,25 @@ class RMHiranoDiffRot(RMHirano):
         return x, y
 
     def evaluate(self,times,base_error=0.):
+        if self.supersample_factor > 1:
+            t_offsets = np.linspace(
+                -self.exp_time / 2.0, self.exp_time / 2.0, self.supersample_factor
+            )
+            times_supersample = (t_offsets + times.reshape(times.size, 1)).flatten()
+        else:
+            times_supersample = times
         sigma = self.sigma
         beta = self.beta
-        X, Y = self.XpYp(times)
+        X, Y = self.XpYp(times_supersample)
         sin_lat = Y * np.sin(self.iS) + np.sqrt(np.clip(1 - X*X - Y*Y, 0.0, None)) * np.cos(self.iS)
-        F = 1.-self.calc_transit(times)
+        F = 1.-self.calc_transit(times_supersample)
         vp = X * self.vsini * (1 - self.alpha * sin_lat * sin_lat)
         # vp[np.abs(F) <= 1e-15] = 0.
         v = -1000.*vp*F*((2.*beta**2.+2.*sigma**2)/(2.*beta**2+sigma**2))**(3./2.) * (1.-(vp**2.)/(2.*beta**2+sigma**2) + (vp**4.)/(2.*(2.*beta**2+sigma**2)**2.))
+        self.v = v
+        v = np.mean(v.reshape(-1, self.supersample_factor), axis=1)
         # For diagnostics
+        self.times_supersample = times_supersample
         self.vp = vp
         self.X = X
         self.F = F
