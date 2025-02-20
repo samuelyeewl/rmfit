@@ -2194,6 +2194,79 @@ class RMHirano(object):
         else:
             return v
 
+            
+class RMHiranoDiffRot(RMHirano):
+    """
+    Evaluate Rossiter McLaughlin effect using the model of Hirano et al. 2010, 2011
+    Accounts for differential rotation
+    """
+    def __init__(self,lam,vsini,P,T0,aRs,i,RpRs,e,w,u,beta,sigma,alpha,istar,supersample_factor=7,exp_time=0.00035,limb_dark='linear'):
+        """
+        Evaluate Rossiter McLaughlin effect using the model of Hirano et al. 2010, 2011
+
+        INPUT:
+            lam - sky-projected obliquity in deg
+            vsini - sky-projected rotational velocity in km/s
+            P - Period in days
+            T0 - Transit center
+            aRs - a/R*
+            i - inclination in degrees
+            RpRs - radius ratio
+            e - eccentricity
+            w - omega in degrees
+            u - [u1,u2] where u1 and u2 are the quadratic limb-dark coefficients
+            beta - Gaussian dispersion of spectral lines, in km/s, typically 2.5-4.5km/s (see Hirano+11)
+            sigma - Gaussian broadening kernel from Hirano+10. Hirano+10 found vsini/1.31 as an approximation that sometimes works (Why?).
+
+        EXAMPLE:
+            times = np.linspace(-0.05,0.05,200)
+            T0 = 0.
+            P = 3.48456408
+            aRs = 21.09
+            i = 89.
+            vsini = 8.7
+            rprs = np.sqrt(0.01)
+            e = 0.
+            w = 90.
+            lam = 45.
+            u = [0.3,0.3]
+            R = RMHirano(lam,vsini,P,T0,aRs,i,rprs,e,w,u,limb_dark='quadratic')
+            rm = R.evaluate(times)
+
+            fig, ax = plt.subplots()
+            ax.plot(times,rm)
+        """
+        super().__init__(lam,vsini,P,T0,aRs,i,RpRs,e,w,u,beta,sigma,supersample_factor=supersample_factor,exp_time=exp_time,limb_dark=limb_dark)
+        self.alpha = alpha
+        self.iS = istar
+        
+    def XpYp(self,times):
+        lam, w, i = np.deg2rad(self.lam), np.deg2rad(self.w), np.deg2rad(self.i)
+        f = self.true_anomaly(times)
+        r = self.aRs*(1.-self.e**2.)/(1.+self.e*np.cos(f)) # distance
+        x = -r*np.cos(f+w)*np.cos(lam) + r*np.sin(lam)*np.sin(f+w)*np.cos(i)
+        y = -r*np.cos(f+w)*np.sin(lam) - r*np.cos(lam)*np.sin(f+w)*np.cos(i)
+        return x, y
+
+    def evaluate(self,times,base_error=0.):
+        sigma = self.sigma
+        beta = self.beta
+        X, Y = self.XpYp(times)
+        sin_lat = Y * np.sin(self.iS) + np.sqrt(np.clip(1 - X*X - Y*Y, 0.0, None)) * np.cos(self.iS)
+        F = 1.-self.calc_transit(times)
+        vp = X * self.vsini * (1 - self.alpha * sin_lat * sin_lat)
+        # vp[np.abs(F) <= 1e-15] = 0.
+        v = -1000.*vp*F*((2.*beta**2.+2.*sigma**2)/(2.*beta**2+sigma**2))**(3./2.) * (1.-(vp**2.)/(2.*beta**2+sigma**2) + (vp**4.)/(2.*(2.*beta**2+sigma**2)**2.))
+        # For diagnostics
+        self.vp = vp
+        self.X = X
+        self.F = F
+        if base_error >0:
+            return v + np.random.normal(loc=0.,scale=base_error,size=len(v))
+        else:
+            return v
+    
+
 def true_anomaly(time,T0,P,aRs,inc,ecc,omega):
     """
     Uses the batman function to get the true anomaly. Note that some 
