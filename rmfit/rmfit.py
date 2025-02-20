@@ -2135,7 +2135,7 @@ class RMHirano(object):
         self.sigma = sigma
         self.exp_time = exp_time
         self.supersample_factor = int(supersample_factor)
-        self._Omega = (self.vsini/np.sin(np.deg2rad(self.iS)))/(self.rstar*aconst.R_sun.value/1000.)
+        # self._Omega = (self.vsini/np.sin(np.deg2rad(self.iS)))/(self.rstar*aconst.R_sun.value/1000.)
 
     def true_anomaly(self,times):
         """
@@ -2182,7 +2182,8 @@ class RMHirano(object):
         beta = self.beta
         X = self.Xp(times)
         F = 1.-self.calc_transit(times)
-        vp = X*self._Omega*np.sin(self.iS)*self.rstar*aconst.R_sun.value/1000.
+        # vp = X*self._Omega*np.sin(np.deg2rad(self.iS))*self.rstar*aconst.R_sun.value/1000.
+        vp = X * self.vsini
         v = -1000.*vp*F*((2.*beta**2.+2.*sigma**2)/(2.*beta**2+sigma**2))**(3./2.) * (1.-(vp**2.)/(2.*beta**2+sigma**2) + (vp**4.)/(2.*(2.*beta**2+sigma**2)**2.))
         # For diagnostics
         self.vp = vp
