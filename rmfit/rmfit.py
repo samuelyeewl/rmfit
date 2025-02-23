@@ -2295,6 +2295,396 @@ class RMHiranoDiffRot(RMHirano):
         else:
             return v
     
+# b(alpha) coefficients
+bm1 = np.pi
+b0 = 2
+b1= 0.5 * bm1
+b2 = 2/3 * b0
+class RMBoue(object):
+    def __init__(self,lam,vsini,P,T0,aRs,i,RpRs,e,w,u,beta,sigma,zeta=0.0,supersample_factor=7,exp_time=0.00035,limb_dark='linear'):
+        """
+        Evaluate Rossiter McLaughlin effect using the model of Hirano et al. 2010, 2011
+
+        INPUT:
+            lam - sky-projected obliquity in deg
+            vsini - sky-projected rotational velocity in km/s
+            P - Period in days
+            T0 - Transit center
+            aRs - a/R*
+            i - inclination in degrees
+            RpRs - radius ratio
+            e - eccentricity
+            w - omega in degrees
+            u - [u1,u2] where u1 and u2 are the quadratic limb-dark coefficients
+            beta - Width of subplanet line profile
+            sigma - Width of Gaussian fit used to measure the CCFs
+            zeta - Macroturbulent broadening
+
+        EXAMPLE:
+            times = np.linspace(-0.05,0.05,200)
+            T0 = 0.
+            P = 3.48456408
+            aRs = 21.09
+            i = 89.
+            vsini = 8.7
+            rprs = np.sqrt(0.01)
+            e = 0.
+            w = 90.
+            lam = 45.
+            u = [0.3,0.3]
+            R = RMHirano(lam,vsini,P,T0,aRs,i,rprs,e,w,u,limb_dark='quadratic')
+            rm = R.evaluate(times)
+
+            fig, ax = plt.subplots()
+            ax.plot(times,rm)
+        """
+        self.lam = lam
+        self.vsini = vsini
+        self.P = P
+        self.T0 = T0
+        self.aRs = aRs
+        self.i = i
+        self.iS = 90. # not really using anymore, as it cancels out, should just remove
+        self.RpRs = RpRs
+        self.e = e
+        self.w = w
+        self.u = u
+        self.limb_dark = limb_dark
+        self.beta = beta
+        self.sigma = sigma
+        self.zeta = zeta
+        self.sigmat = np.sqrt(sigma**2 + beta**2 + (zeta**2)/2)
+        self.exp_time = exp_time
+        self.supersample_factor = int(supersample_factor)
+
+        # Compute denominator
+        self.a0 = self.boue_denominator()
+
+    def boue_denominator(self):
+        """
+        Compute the denominator of the Boue+13 model
+        """
+        a0 = 4 * self.sigma * np.sqrt(np.pi) * quad(self.funcAmp_0, 0, 1)[0]
+        return a0
+        
+    def funcAmp_0(self, v):
+        """
+        Compute the term in the integral. Integrate from 0 to 1.
+        
+        sigmat: Width of Gaussian kernel
+        """
+        gaussian = np.exp(-(v * self.vsini)**2/(2*self.sigmat**2)) / np.sqrt(2*np.pi) / self.sigmat
+        mu = np.sqrt(1 - v*v)
+        u1, u2 = self.u
+        denom = np.pi * (1.0 - u1/3.0 - u2/6.0)
+        u0p = (1 - u1 - u2) / denom
+        u1p = (u1 + u2 + u2) / denom
+        u2p = -u2 / denom
+        rotkernel = u0p * b0 * mu + u1p * b1 * (mu*mu) + u2p * b2 * (mu*mu*mu)
+        return gaussian * rotkernel
+    
+    def true_anomaly(self,times):
+        """
+        Calculate the true anomaly
+        """
+        f = true_anomaly(times,self.T0,self.P,self.aRs,self.i,self.e,self.w)
+        return f
+
+    def calc_transit(self,times):
+        """
+        Calculate transit model of planet
+        """
+        params = batman.TransitParams()
+        params.t0 = self.T0
+        params.per = self.P
+        params.inc = self.i
+        params.rp = self.RpRs
+        params.a = self.aRs
+        params.ecc = self.e
+        params.w = self.w
+        params.u = self.u
+        params.limb_dark = self.limb_dark
+        params.fp = 0.001
+        transitmodel = batman.TransitModel(params, times, transittype='primary',exp_time=self.exp_time,
+                                         supersample_factor=self.supersample_factor)
+        return transitmodel.light_curve(params)
+
+    def planet_XYZ_position(self,times):
+        """
+        Get the planet XYZ position at times
+        """
+        X, Y, Z = planet_XYZ_position(times,self.T0,self.P,self.aRs,self.i,self.e,self.w)
+        return X, Y, Z
+
+    def Xp(self,times):
+        lam, w, i = np.deg2rad(self.lam), np.deg2rad(self.w), np.deg2rad(self.i)
+        f = self.true_anomaly(times)
+        r = self.aRs*(1.-self.e**2.)/(1.+self.e*np.cos(f)) # distance
+        x = -r*np.cos(f+w)*np.cos(lam) + r*np.sin(lam)*np.sin(f+w)*np.cos(i)
+        return x
+
+    def evaluate(self,times,base_error=0.):
+        sigma = self.sigma
+        beta = self.beta
+        X = self.Xp(times)
+        F = 1.-self.calc_transit(times)
+        # vp = X*self._Omega*np.sin(np.deg2rad(self.iS))*self.rstar*aconst.R_sun.value/1000.
+        vp = X * self.vsini
+        v = -1000./self.a0 * F * vp * ((2*sigma*sigma) / (sigma*sigma + beta*beta))**(3/2) * np.exp(-(vp*vp)/(2*(sigma*sigma+beta*beta)))
+        # For diagnostics
+        self.vp = vp
+        self.X = X
+        self.F = F
+        if base_error >0:
+            return v + np.random.normal(loc=0.,scale=base_error,size=len(v))
+        else:
+            return v
+        
+        
+class RMBoueMacroturb(RMBoue):
+    """
+    Evaluate Rossiter McLaughlin effect using the model of Boue+13
+    Accounts for macroturbulent broadening
+    """
+    def XpYp(self,times):
+        lam, w, i = np.deg2rad(self.lam), np.deg2rad(self.w), np.deg2rad(self.i)
+        f = self.true_anomaly(times)
+        r = self.aRs*(1.-self.e**2.)/(1.+self.e*np.cos(f)) # distance
+        x = -r*np.cos(f+w)*np.cos(lam) + r*np.sin(lam)*np.sin(f+w)*np.cos(i)
+        y = -r*np.cos(f+w)*np.sin(lam) - r*np.cos(lam)*np.sin(f+w)*np.cos(i)
+        return x, y
+    
+    def _theta(self, r, d):
+        """
+        Theta function from Sacket et al. 1998 (EQ 10)
+        
+        r: Radius from center of star
+        d: Distance between centers of star and planet
+        """
+        return (d**2.+r**2.-self.RpRs**2.)/(2.*r*d)
+
+    def _limb_dark_quadratic(self, r):
+        """
+        Quadratic limb darkening
+        
+        r: Radial coordinate from center of star
+        """
+        mu = np.sqrt(1 - r*r)
+        u1, u2 = self.u
+        return 1 - u1 * (1 - mu) - u2 * (1 - mu)**2
+    
+    def _denom_integrand(self, r, d):
+        if r > 1.:
+            return 0.
+        if d==0:
+            return (r*2*np.pi*self._limb_dark_quadratic(r))
+        t = self._theta(r, d)
+        if np.abs(t) > 1:
+            return (r*2*np.pi*self._limb_dark_quadratic(r))
+        else:
+            return (r*2*np.arccos(t)*self._limb_dark_quadratic(r))
+        
+    def _num_radial_integrand(self, r, d):
+        if r > 1.:
+            return 0.
+        mu2 = 1 - r*r
+        if d==0:
+            return (mu2*r*2*np.pi*self._limb_dark_quadratic(r))
+        t = self._theta(r, d)
+        if np.abs(t) > 1:
+            return (mu2*r*2*np.pi*self._limb_dark_quadratic(r))
+        else:
+            return (mu2*r*2*np.arccos(t)*self._limb_dark_quadratic(r))
+        
+    def _num_tangential_integrand(self, r, d):
+        if r > 1.:
+            return 0.
+        r2 = r*r
+        if d==0:
+            return (r2*r*2*np.pi*self._limb_dark_quadratic(r))
+        t = self._theta(r, d)
+        if np.abs(t) > 1:
+            return (r2*r*2*np.pi*self._limb_dark_quadratic(r))
+        else:
+            return (r2*r*2*np.arccos(t)*self._limb_dark_quadratic(r))
+    
+    def evaluate(self,times,base_error=0.):
+        sigma = self.sigma
+        beta = self.beta
+        zeta = self.zeta
+        X, Y = self.XpYp(times)
+        # Compute macroturbulent broadening widths
+        # ds = np.sqrt(X**2 + Y**2)
+        # low_lim = np.maximum(0, ds - self.RpRs)
+        # upp_lim = np.minimum(1, ds + self.RpRs)
+        # denoms = np.array([quad(self._denom_integrand, low_lim[i], upp_lim[i], args=(ds[i]))[0] for i in range(len(ds))])
+        # num_radial = np.array([quad(self._num_radial_integrand, low_lim[i], upp_lim[i], args=(ds[i]))[0] for i in range(len(ds))])
+        # num_tangential = np.array([quad(self._num_tangential_integrand, low_lim[i], upp_lim[i], args=(ds[i]))[0] for i in range(len(ds))])
+        # epsilon = 1e-10
+        # betaR2 = beta*beta + zeta*zeta * num_radial / (denoms + epsilon)
+        # betaT2 = beta*beta + zeta*zeta * num_tangential / (denoms + epsilon)
+        betaR2 = beta*beta + zeta*zeta/2
+        betaT2 = beta*beta + zeta*zeta/2
+        F = 1.-self.calc_transit(times)
+        vp = X * self.vsini
+        v = -1000./2/self.a0 * F * vp *(
+            ((2*sigma*sigma) / (sigma*sigma + betaR2))**(3/2) * np.exp(-(vp*vp)/(2*(sigma*sigma+betaR2))) +
+            ((2*sigma*sigma) / (sigma*sigma + betaT2))**(3/2) * np.exp(-(vp*vp)/(2*(sigma*sigma+betaT2))))
+        # For diagnostics
+        self.vp = vp
+        self.X = X
+        self.F = F
+        if base_error >0:
+            return v + np.random.normal(loc=0.,scale=base_error,size=len(v))
+        else:
+            return v
+
+
+def fibonacci_disk_sampling(N):
+    """
+    Generate N points in a Fibonacci spiral inside the unit disk.
+
+    Returns arrays x, y.
+    """
+    phi = (1.0 + np.sqrt(5.0)) / 2.0  # golden ratio
+    alpha = 2.0 * np.pi / (phi**2)
+
+    k = np.arange(N)  # 0..N-1
+    r = np.sqrt((k + 0.5)/N)  # radius
+    theta = k * alpha
+
+    x = r * np.cos(theta)
+    y = r * np.sin(theta)
+    return x, y
+
+
+class RMReloaded(object):
+    NUM_POINTS = 10000
+    GRID_AREA = np.pi / NUM_POINTS
+    grid_x, grid_y = fibonacci_disk_sampling(NUM_POINTS)
+    
+    def __init__(self, times, P, T0, aRs, i, RpRs, e, w, u):
+        """
+        Evaluate Rossiter McLaughlin Reloaded effect using Cegla et al. 2016
+
+        INPUT:
+            times - Fixed set of times at which to evaluate the RM effect
+            -- Planet properties only required for computing true anomaly
+            P - Period in days
+            T0 - Transit center
+            aRs - a/R*
+            i - planet orbital inclination in degrees
+            RpRs - radius ratio
+            e - eccentricity
+            w - omega in degrees
+            u - [u1,u2] where u1 and u2 are the quadratic limb-dark coefficients
+            -- RM parameters
+            lam - sky-projected obliquity in deg
+            vsini - sky-projected rotational velocity in km/s
+
+        EXAMPLE:
+            times = np.linspace(-0.05,0.05,200)
+            T0 = 0.
+            P = 3.48456408
+            aRs = 21.09
+            i = 89.
+            vsini = 8.7
+            rprs = np.sqrt(0.01)
+            e = 0.
+            w = 90.
+            lam = 45.
+            u = [0.3,0.3]
+            R = RMHirano(lam,vsini,P,T0,aRs,i,rprs,e,w,u,limb_dark='quadratic')
+            rm = R.evaluate(times)
+
+            fig, ax = plt.subplots()
+            ax.plot(times,rm)
+        """
+        self.times = times
+        # Planet orbital parameters
+        self.P = P
+        self.T0 = T0
+        self.aRs = aRs
+        self.i = i
+        self.RpRs = RpRs
+        self.e = e
+        self.w = w
+        self.u = u
+        # Location of the center of the planet at a given time
+        self.Xp, self.Yp = self.XpYp(times)
+        # Grid translated and scaled to the planet's position at each time.
+        self.Xp_grid = self.Xp[:, np.newaxis] + self.grid_x * self.RpRs
+        self.Yp_grid = self.Yp[:, np.newaxis] + self.grid_y * self.RpRs
+        # Radial distance of each point
+        self.r_grid = np.sqrt(self.Xp_grid**2 + self.Yp_grid**2)
+        self.mask_grid = self.r_grid < 1
+        # Limb-darkened flux at each point
+        self.F = self._limb_dark_quadratic(self.r_grid)
+        self.F[~self.mask_grid] = 0
+        # Flux normalization
+        self.flux_norm = np.sum(self.F * self.mask_grid, axis=1)
+
+    def _limb_dark_quadratic(self, r):
+        """
+        Quadratic limb darkening
+        
+        r: Radial coordinate from center of star
+        """
+        mu = np.sqrt(1 - r*r)
+        u1, u2 = self.u
+        return 1 - u1 * (1 - mu) - u2 * (1 - mu)**2
+
+    def true_anomaly(self,times):
+        """
+        Calculate the true anomaly
+        """
+        f = true_anomaly(times,self.T0,self.P,self.aRs,self.i,self.e,self.w)
+        return f
+
+    def XpYp(self,times):
+        """
+        Unlike the function used in RMHirano, the coordinate system used here has
+        the y-axis aligned with the planet's orbital axis.
+        """
+        w, i = np.deg2rad(self.w), np.deg2rad(self.i)
+        f = self.true_anomaly(times)
+        r = self.aRs*(1.-self.e**2.)/(1.+self.e*np.cos(f)) # distance
+        x = -r*np.cos(f+w)
+        y = -r*np.sin(f+w)*np.cos(i)
+        return x, y
+
+    def evaluate(self,lam, vsini, istar=90.0, alpha=None, times=None):
+        if times is None:
+            Xp, Yp = self.Xp_grid, self.Yp_grid
+            mask_grid = self.mask_grid
+            F = self.F
+            flux_norm = self.flux_norm
+        else:
+            Xp, Yp = self.XpYp(times)
+            Xp = Xp[:, np.newaxis] + self.grid_x * self.RpRs
+            Yp = Yp[:, np.newaxis] + self.grid_y * self.RpRs
+            r_grid = np.sqrt(Xp**2 + Yp**2)
+            mask_grid = r_grid < 1
+            F = self._limb_dark_quadratic(r_grid)
+            F[~mask_grid] = 0
+            flux_norm = np.sum(F * mask_grid, axis=1)
+
+        # Rotate coordinates by projected obliquity
+        Xorth = Xp * np.cos(np.deg2rad(lam)) - Yp * np.sin(np.deg2rad(lam))
+        Yorth = Xp * np.sin(np.deg2rad(lam)) + Yp * np.cos(np.deg2rad(lam))
+        # Compute stellar velocity for each point
+        vstel = Xorth * vsini
+        if alpha is not None:
+            # Account for differential rotation
+            Zorth = np.sqrt(1 - Xorth**2 - Yorth**2)
+            beta = np.pi/2 - np.deg2rad(istar)
+            sin_lat = Zorth * np.sin(beta) + Yorth * np.cos(beta)
+            vstel *= (1 - alpha * sin_lat * sin_lat)
+        # Brightness averaged stellar velocity
+        v = np.sum(F * vstel * mask_grid, axis=1) / flux_norm
+        
+        return v
+    
 
 def true_anomaly(time,T0,P,aRs,inc,ecc,omega):
     """
